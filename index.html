@@ -248,6 +248,7 @@
     .meal-tag.lunch { color: #3A6B8A; background: #DDE9F0; }
     .meal-tag.dinner { color: #4A7C59; background: #E3EEE7; }
     .meal-tag.out { color: #A34040; background: #F0E0E0; font-style: italic; }
+    .meal-tag.out-tony { color: #3A6B8A; background: #DDE9F0; font-style: italic; }
     .add-slot {
       font-size: 9px;
       color: #C8BFB0;
@@ -743,7 +744,8 @@
           <input type="text" id="ip-search" placeholder="Search your recipes…" oninput="filterPicker()" />
         </div>
         <div id="ip-list"></div>
-        <div class="ip-out" onclick="markOut()">🚫 Mark as "Jess out" — skip this meal</div>
+        <div class="ip-out" onclick="markOut('J')">🚫 Jess is out — skip this meal</div>
+        <div class="ip-out" style="color:#3A6B8A;" onclick="markOut('T')">🚫 Tony is out — skip this meal</div>
       </div>
 
       <button class="grocery-link" onclick="setView('grocery')">→ View this week's grocery list</button>
@@ -1152,8 +1154,10 @@ function renderPlanner() {
       const slotData = mealPlan[dateStr]?.[meal];
       let cellContent = '';
 
-      if (slotData === 'out') {
+      if (slotData === 'out' || slotData === 'out-J') {
         cellContent = `<span class="meal-tag out">Jess out</span>`;
+      } else if (slotData === 'out-T') {
+        cellContent = `<span class="meal-tag out-tony">Tony out</span>`;
       } else if (slotData) {
         const recipe = getRecipeById(slotData);
         const name = recipe ? recipe.name : 'Unknown';
@@ -1254,14 +1258,14 @@ async function pickMeal(recipeId) {
   showToast('Meal added ✓');
 }
 
-async function markOut() {
+async function markOut(person) {
   if (!pickerDate || !pickerMeal) return;
   if (!mealPlan[pickerDate]) mealPlan[pickerDate] = {};
-  mealPlan[pickerDate][pickerMeal] = 'out';
+  mealPlan[pickerDate][pickerMeal] = 'out-' + person;
   closePicker();
   renderPlanner();
-  await saveMealPlan(pickerDate, pickerMeal, null, true);
-  showToast('Marked as Jess out');
+  await saveMealPlan(pickerDate, pickerMeal, null, person);
+  showToast(`Marked as ${person === 'J' ? 'Jess' : 'Tony'} out`);
 }
 
 document.addEventListener('click', e => {
@@ -1836,7 +1840,11 @@ async function loadAllData() {
     if (plans) {
       plans.forEach(p => {
         if (!mealPlan[p.date]) mealPlan[p.date] = {};
-        mealPlan[p.date][p.meal_type] = p.is_out ? 'out' : p.recipe_id;
+        if (p.is_out) {
+          mealPlan[p.date][p.meal_type] = 'out-' + (p.out_person || 'J');
+        } else {
+          mealPlan[p.date][p.meal_type] = p.recipe_id;
+        }
       });
     }
 
@@ -1848,10 +1856,13 @@ async function loadAllData() {
   }
 }
 
-async function saveMealPlan(date, mealType, recipeId, isOut = false) {
+async function saveMealPlan(date, mealType, recipeId, outPerson = null) {
   try {
     await db.from('meal_plan').upsert({
-      date, meal_type: mealType, recipe_id: recipeId || null, is_out: isOut
+      date, meal_type: mealType,
+      recipe_id: recipeId || null,
+      is_out: !!outPerson,
+      out_person: outPerson || null
     }, { onConflict: 'date,meal_type' });
   } catch (e) { console.warn('Save meal plan:', e); }
 }
