@@ -1632,18 +1632,9 @@ function findRecipeInJsonLD(obj) {
 }
 
 async function fetchPageHTML(url) {
-  // Try two proxies in sequence
-  const proxies = [
-    () => fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`).then(r => r.text()),
-    () => fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`).then(r => r.json()).then(j => j.contents),
-  ];
-  for (const proxy of proxies) {
-    try {
-      const html = await Promise.race([proxy(), new Promise((_, rej) => setTimeout(() => rej('timeout'), 8000))]);
-      if (html && html.length > 500) return html;
-    } catch {}
-  }
-  return null;
+  const res = await fetch(`/api/scrape?url=${encodeURIComponent(url)}`);
+  if (!res.ok) throw new Error(`Scrape failed: ${res.status}`);
+  return await res.text();
 }
 
 function parseISO8601Duration(d) {
