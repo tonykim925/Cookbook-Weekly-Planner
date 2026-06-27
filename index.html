@@ -1426,11 +1426,14 @@ function renderDetailIngredients() {
   if (!r) return;
   const scale = currentServings / baseServings;
   const html = (r.ingredients || []).map(ing => {
-    let qty = ing.quantity || '';
-    if (qty && !isNaN(parseFloat(qty))) {
-      qty = String(Math.round(parseFloat(qty) * scale * 10) / 10);
+    let qtyDisplay = '';
+    if (ing.quantity && !isNaN(parseFloat(ing.quantity))) {
+      const scaled = parseFloat(ing.quantity) * scale;
+      qtyDisplay = formatQty(scaled) + (ing.unit ? ' ' + ing.unit : '');
+    } else if (ing.quantity) {
+      qtyDisplay = ing.quantity + (ing.unit ? ' ' + ing.unit : '');
     }
-    return `<li>${escapeHtml(ing.name)} <span>${escapeHtml(qty + ' ' + (ing.unit || '')).trim()}</span></li>`;
+    return `<li>${escapeHtml(ing.name)} <span>${escapeHtml(qtyDisplay.trim())}</span></li>`;
   }).join('');
   document.getElementById('rd-ingredients').innerHTML = html;
 }
@@ -1613,6 +1616,40 @@ async function saveRecipe() {
   renderRecipeGrid();
 }
 
+// ── Ingredient parsing helpers ────────────────────────────────────────────────
+
+function parseFraction(s) {
+  s = s.trim();
+  const mixed = s.match(/^(\d+)\s+(\d+)\/(\d+)$/);
+  if (mixed) return parseInt(mixed[1]) + parseInt(mixed[2]) / parseInt(mixed[3]);
+  const frac = s.match(/^(\d+)\/(\d+)$/);
+  if (frac) return parseInt(frac[1]) / parseInt(frac[2]);
+  return parseFloat(s) || 0;
+}
+
+function formatQty(n) {
+  if (!n && n !== 0) return '';
+  const map = [[0.125,'⅛'],[0.25,'¼'],[0.333,'⅓'],[0.5,'½'],[0.667,'⅔'],[0.75,'¾']];
+  const w = Math.floor(n), d = Math.round((n - w) * 1000) / 1000;
+  if (d === 0) return w ? String(w) : '';
+  for (const [v, sym] of map) if (Math.abs(d - v) < 0.04) return w > 0 ? `${w} ${sym}` : sym;
+  return n.toFixed(1);
+}
+
+function parseIngredientStr(str) {
+  const UNITS = /^(tablespoons?|tbsp|teaspoons?|tsp|cups?|ounces?|oz|pounds?|lbs?|grams?|g\b|kg|ml|liters?|cloves?|cans?|slices?|pieces?|packages?|pkg|bunches?|sprigs?|stalks?|heads?|inches?|pinch|handful|dash)\s+/i;
+  let s = str.trim();
+  const numRe = /^(\d+\s+\d+\/\d+|\d+\/\d+|\d+\.?\d*)\s*/;
+  const numMatch = s.match(numRe);
+  if (!numMatch) return { quantity: '', unit: '', name: str };
+  const quantity = String(parseFraction(numMatch[1]));
+  s = s.slice(numMatch[0].length);
+  const unitMatch = s.match(UNITS);
+  let unit = '';
+  if (unitMatch) { unit = unitMatch[1]; s = s.slice(unitMatch[0].length); }
+  return { quantity, unit, name: s.trim() || str };
+}
+
 // ── URL import ────────────────────────────────────────────────────────────────
 
 // Recursively find a Recipe object inside any JSON-LD structure
@@ -1669,7 +1706,7 @@ async function fetchRecipe() {
     if (!recipe) throw new Error('No recipe data found');
 
     const name = recipe.name || 'Imported Recipe';
-    const ingredients = (recipe.recipeIngredient || []).map(i => ({ name: String(i), quantity: '', unit: '' }));
+    const ingredients = (recipe.recipeIngredient || []).map(i => parseIngredientStr(String(i)));
 
     // Instructions can be strings, HowToStep objects, or HowToSection objects
     const flatInstructions = (recipe.recipeInstructions || []).flatMap(s => {
