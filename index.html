@@ -1614,61 +1614,97 @@ async function saveRecipe() {
 }
 
 // ── URL import ────────────────────────────────────────────────────────────────
+
+// Recursively find a Recipe object inside any JSON-LD structure
+// Handles: direct object, array, @graph wrapper
+function findRecipeInJsonLD(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  const type = obj['@type'];
+  if (type === 'Recipe' || (Array.isArray(type) && type.includes('Recipe'))) return obj;
+  if (Array.isArray(obj)) {
+    for (const item of obj) { const r = findRecipeInJsonLD(item); if (r) return r; }
+  }
+  if (obj['@graph']) {
+    const graph = Array.isArray(obj['@graph']) ? obj['@graph'] : [obj['@graph']];
+    for (const item of graph) { const r = findRecipeInJsonLD(item); if (r) return r; }
+  }
+  return null;
+}
+
+async function fetchPageHTML(url) {
+  // Try two proxies in sequence
+  const proxies = [
+    () => fetch(`https://corsproxy.io/?${encodeURIComponent(url)}`).then(r => r.text()),
+    () => fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`).then(r => r.json()).then(j => j.contents),
+  ];
+  for (const proxy of proxies) {
+    try {
+      const html = await Promise.race([proxy(), new Promise((_, rej) => setTimeout(() => rej('timeout'), 8000))]);
+      if (html && html.length > 500) return html;
+    } catch {}
+  }
+  return null;
+}
+
+function parseISO8601Duration(d) {
+  if (!d) return '';
+  const m = d.match(/PT?(?:(\d+)H)?(?:(\d+)M)?/);
+  if (!m) return d;
+  const h = parseInt(m[1] || 0), min = parseInt(m[2] || 0);
+  return h ? `${h}h ${min > 0 ? min + 'm' : ''}`.trim() : `${min} min`;
+}
+
 async function fetchRecipe() {
   const url = document.getElementById('import-url').value.trim();
   if (!url) { showToast('Please paste a recipe URL'); return; }
-
   document.getElementById('fetch-spinner').style.display = 'inline-block';
 
   try {
-    // Use allorigins proxy to bypass CORS, then parse JSON-LD
-    const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-    const res = await fetch(proxy);
-    const json = await res.json();
-    const html = json.contents;
+    const html = await fetchPageHTML(url);
+    if (!html) throw new Error('Could not fetch page');
 
-    // Parse schema.org Recipe JSON-LD
-    const match = html.match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+    // Extract all JSON-LD blocks
+    const blocks = html.match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi) || [];
     let recipe = null;
 
-    if (match) {
-      for (const block of match) {
-        try {
-          const inner = block.replace(/<script[^>]*>/, '').replace(/<\/script>/, '');
-          const parsed = JSON.parse(inner);
-          const candidates = Array.isArray(parsed) ? parsed : [parsed];
-          for (const c of candidates) {
-            if (c['@type'] === 'Recipe' || (Array.isArray(c['@type']) && c['@type'].includes('Recipe'))) {
-              recipe = c; break;
-            }
-          }
-        } catch {}
-        if (recipe) break;
-      }
+    for (const block of blocks) {
+      try {
+        const inner = block.replace(/<script[^>]*>/, '').replace(/<\/script>/, '');
+        recipe = findRecipeInJsonLD(JSON.parse(inner));
+      } catch {}
+      if (recipe) break;
     }
 
-    if (!recipe) throw new Error('No structured recipe data found on this page.');
+    if (!recipe) throw new Error('No recipe data found');
 
     const name = recipe.name || 'Imported Recipe';
-    const ingredients = (recipe.recipeIngredient || []).map(i => ({ name: i, quantity: '', unit: '' }));
-    const instructions = (recipe.recipeInstructions || [])
-      .map((s, i) => `${i + 1}. ${typeof s === 'string' ? s : s.text || ''}`)
-      .join('\n');
-    const time = recipe.totalTime || recipe.cookTime || '';
-    const servings = parseInt(recipe.recipeYield) || 4;
+    const ingredients = (recipe.recipeIngredient || []).map(i => ({ name: String(i), quantity: '', unit: '' }));
+
+    // Instructions can be strings, HowToStep objects, or HowToSection objects
+    const flatInstructions = (recipe.recipeInstructions || []).flatMap(s => {
+      if (typeof s === 'string') return [s];
+      if (s['@type'] === 'HowToSection') return (s.itemListElement || []).map(x => x.text || x.name || '');
+      return [s.text || s.name || ''];
+    }).filter(Boolean);
+    const instructions = flatInstructions.map((s, i) => `${i + 1}. ${s}`).join('\n');
+
+    const rawTime = recipe.totalTime || recipe.cookTime || recipe.prepTime || '';
+    const time = rawTime.startsWith('PT') ? parseISO8601Duration(rawTime) : rawTime;
+    const yieldVal = recipe.recipeYield;
+    const servings = parseInt(Array.isArray(yieldVal) ? yieldVal[0] : yieldVal) || 4;
 
     importedRecipeData = { name, ingredients, instructions, cook_time: time, servings, source_url: url, tags: [], emoji: '🍳' };
 
     document.getElementById('imp-title').textContent = name;
     document.getElementById('imp-source').textContent = new URL(url).hostname.replace('www.', '');
-    document.getElementById('imp-ingredients').innerHTML = ingredients.map(i => i.name).join('<br>');
+    document.getElementById('imp-ingredients').innerHTML = ingredients.map(i => escapeHtml(i.name)).join('<br>');
     document.getElementById('imp-instructions').textContent = instructions;
     document.getElementById('imp-time').textContent = time || '—';
     document.getElementById('imp-servings').textContent = servings;
     document.getElementById('import-preview').classList.add('show');
     showToast('Recipe found ✓');
   } catch (e) {
-    showToast('Could not import recipe — try adding it manually');
+    showToast('Could not import — try the other URL or add manually');
     console.error(e);
   }
   document.getElementById('fetch-spinner').style.display = 'none';
